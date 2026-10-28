@@ -26,15 +26,29 @@ def _tokenize_keep_en(s: str) -> List[str]:
 
 
 def split_text_into_paragraphs(text: str) -> List[str]:
-    """Join hard-wrapped lines with spaces while preserving blank-line paragraphs."""
+    """Join hard-wrapped lines but preserve blank and all-uppercase heading lines."""
     if not text:
         return []
 
     paragraphs = []
-    for paragraph in RE_PARAGRAPH_BREAK.split(text):
-        paragraph = RE_INLINE_NEWLINE.sub(' ', paragraph).strip()
-        if paragraph:
-            paragraphs.append(paragraph)
+    for block in RE_PARAGRAPH_BREAK.split(text):
+        current_lines = []
+        for line in RE_INLINE_NEWLINE.split(block):
+            line = line.strip()
+            if not line:
+                continue
+
+            letters = [char for char in line if char.isalpha()]
+            if letters and all(char.isupper() for char in letters):
+                if current_lines:
+                    paragraphs.append(' '.join(current_lines))
+                    current_lines.clear()
+                paragraphs.append(line)
+            else:
+                current_lines.append(line)
+
+        if current_lines:
+            paragraphs.append(' '.join(current_lines))
     return paragraphs
 
 

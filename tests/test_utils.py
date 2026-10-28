@@ -75,6 +75,34 @@ def test_tts_normalization_keeps_blank_line_paragraph_pause():
     assert len(chunks) == 2
     assert gaps == ["para"]
 
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
+def test_uppercase_heading_line_keeps_paragraph_break(line_break):
+    from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps
+    from vieneu_utils.core_utils import split_text_into_paragraphs
+
+    heading = "GIỮ GÌN OAI NGHI TRONG GIỜ HỌC"
+    text = f"{heading}{line_break}Các em cần giữ trật tự và chú ý nghe giảng."
+
+    assert split_text_into_paragraphs(text) == [
+        heading,
+        "Các em cần giữ trật tự và chú ý nghe giảng.",
+    ]
+    chunks, gaps = normalize_to_chunks_v3_with_gaps(text)
+    assert len(chunks) == 2
+    assert gaps == ["para"]
+
+
+def test_uppercase_heading_does_not_join_previous_or_following_text():
+    from vieneu_utils.core_utils import split_text_into_paragraphs
+
+    text = "Đoạn trước.\nGIỮ GÌN OAI NGHI TRONG GIỜ HỌC\nĐoạn sau."
+    assert split_text_into_paragraphs(text) == [
+        "Đoạn trước.",
+        "GIỮ GÌN OAI NGHI TRONG GIỜ HỌC",
+        "Đoạn sau.",
+    ]
+
 # --- Sentence splitting (quote-aware) ---
 
 def test_split_into_sentences_basic():
