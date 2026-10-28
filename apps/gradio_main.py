@@ -1993,6 +1993,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                             label="Văn bản",
                             lines=8,
                             placeholder="Dán hoặc gõ văn bản cần đọc vào đây…",
+                            info="Xuống dòng đơn được đọc liền như khoảng trắng; dòng trống vẫn giữ ngắt đoạn.",
                         )
                         
                         voice_select = gr.Dropdown(

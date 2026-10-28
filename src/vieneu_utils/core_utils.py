@@ -8,7 +8,10 @@ import numpy as np
 
 # ─── Regex ───────────────────────────────────────────────────────────────────
 
-RE_NEWLINE          = re.compile(r'[\r\n]+')  # dùng chung cho cả v1 và v2
+RE_PARAGRAPH_BREAK  = re.compile(
+    r'(?:\r\n|(?<!\r)\n|\r(?!\n))[ \t]*(?:(?:\r\n|(?<!\r)\n|\r(?!\n))[ \t]*)+'
+)
+RE_INLINE_NEWLINE   = re.compile(r'[\r\n]+')
 RE_SENTENCE_FINDALL = re.compile(r'[^.!?]+[.!?]*|[.!?]+')
 
 # Một "từ" để đóng gói chunk: coi NGUYÊN một thẻ <en>...</en> là một token không
@@ -20,6 +23,20 @@ RE_TOKEN_KEEP_EN = re.compile(r'<en>.*?</en>|\S+', re.IGNORECASE | re.DOTALL)
 def _tokenize_keep_en(s: str) -> List[str]:
     """Tách ``s`` thành token, giữ NGUYÊN mỗi cụm ``<en>...</en>``."""
     return RE_TOKEN_KEEP_EN.findall(s)
+
+
+def split_text_into_paragraphs(text: str) -> List[str]:
+    """Join hard-wrapped lines with spaces while preserving blank-line paragraphs."""
+    if not text:
+        return []
+
+    paragraphs = []
+    for paragraph in RE_PARAGRAPH_BREAK.split(text):
+        paragraph = RE_INLINE_NEWLINE.sub(' ', paragraph).strip()
+        if paragraph:
+            paragraphs.append(paragraph)
+    return paragraphs
+
 
 # v1 only
 RE_SENTENCE_END = re.compile(r'(?<=[\.\!\?\…])\s+')
@@ -539,12 +556,10 @@ def split_text_into_chunks(text: str, max_chars: int = 256) -> List[str]:
         return []
 
     final_chunks: List[str] = []
-    for para in RE_NEWLINE.split(text.strip()):
-        para = para.strip()
-        if para:
-            final_chunks.extend(
-                pack_sentences_into_chunks(split_into_sentences(para), max_chars)
-            )
+    for para in split_text_into_paragraphs(text):
+        final_chunks.extend(
+            pack_sentences_into_chunks(split_into_sentences(para), max_chars)
+        )
     return final_chunks
 
 
@@ -571,13 +586,10 @@ def split_text_into_chunks_with_gaps(
     if not text:
         return [], []
 
-    paragraphs = RE_NEWLINE.split(text.strip())
+    paragraphs = split_text_into_paragraphs(text)
     chunks: List[str] = []
     gaps: List[str] = []
     for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
         para_chunks = split_text_into_chunks(para, max_chars=max_chars)
         if not para_chunks:
             continue
@@ -707,10 +719,7 @@ def split_into_chunks_v2(
     full_phones = _clean_phoneme_noise(full_phones)
 
     raw_parts: List[PhoneChunk] = []
-    for para in RE_NEWLINE.split(full_phones):
-        para = para.strip()
-        if not para:
-            continue
+    for para in split_text_into_paragraphs(full_phones):
         for sent in RE_SENTENCE_FINDALL.findall(para):
             sent = sent.strip()
             if sent:

@@ -12,10 +12,6 @@ from sea_g2p import SEAPipeline, G2P, Normalizer, punc_norm
 
 logger = logging.getLogger("Vieneu.Phonemizer")
 
-# Tách đoạn theo newline — dùng để normalize theo từng đoạn (ranh giới tự nhiên)
-# trước khi chia chunk, giữ input cho regex backtracking ở mức an toàn.
-RE_NEWLINE_SPLIT = re.compile(r"[\r\n]+")
-
 # ---------------------------------------------------------------------------
 # Inline non-verbal cues (emotion tokens) — v3 Turbo emotion checkpoint
 # ---------------------------------------------------------------------------
@@ -240,9 +236,9 @@ def _normalized_sentences_by_para(
     biến "Thế à?" thành "thế à." ngay giữa chunk, mất ngữ điệu hỏi. Dấu câu cuối
     chỉ được chốt một lần ở tầng CHUNK.
     """
-    from vieneu_utils.core_utils import split_into_sentences
+    from vieneu_utils.core_utils import split_into_sentences, split_text_into_paragraphs
 
-    paragraphs = [p for p in RE_NEWLINE_SPLIT.split(text) if p.strip()]
+    paragraphs = split_text_into_paragraphs(text)
     if not paragraphs:
         return []
 
@@ -272,6 +268,7 @@ def normalize_to_chunks(
     đóng gói theo độ dài ĐÃ chuẩn hoá -> chốt dấu câu cuối mỗi chunk. Xem
     :func:`_normalized_sentences_by_para` để biết vì sao thứ tự phải là vậy.
 
+    Xuống dòng đơn được nối bằng khoảng trắng; dòng trống vẫn là ranh giới đoạn.
     Normalize theo từng câu cũng giữ input cho bộ regex backtracking của
     normalizer ở mức an toàn với văn bản cỡ DOCX.
     """
@@ -404,16 +401,17 @@ def phonemize_to_chunks(
     Convert long raw text into bounded phoneme chunks.
 
     Thứ tự (chia chunk SAU normalize): normalize theo từng ĐOẠN (punc_norm=True)
-    -> phonemize -> split ở tầng PHONEME (``split_into_chunks_v2``). Vì chunk
+    -> phonemize -> split ở tầng PHONEME (``split_into_chunks_v2``). Xuống dòng
+    đơn được nối liền; dòng trống vẫn giữ ranh giới đoạn. Vì chunk
     được cắt sau khi đã normalize + phonemize nên độ dài chunk phản ánh đúng
     chuỗi phoneme thật và luôn <= ``max_chars`` (không bị phình như khi cắt trước
     norm). Mỗi chunk luôn có dấu câu kết thúc hợp lệ.
 
-    Normalize theo đoạn (tách newline) giữ input cho bộ regex backtracking ở mức
-    an toàn với văn bản cỡ lớn. ``source_max_chars`` được giữ cho tương thích chữ
+    Normalize theo đoạn giữ input cho bộ regex backtracking ở mức an toàn với văn
+    bản cỡ lớn. ``source_max_chars`` được giữ cho tương thích chữ
     ký nhưng không còn dùng (việc cắt theo độ dài giờ làm ở tầng phoneme).
     """
-    from vieneu_utils.core_utils import split_into_chunks_v2
+    from vieneu_utils.core_utils import split_into_chunks_v2, split_text_into_paragraphs
 
     if not text:
         return []
@@ -422,7 +420,7 @@ def phonemize_to_chunks(
         normalized_units = [text]
     else:
         normalizer = _get_normalizer()
-        paragraphs = [p for p in RE_NEWLINE_SPLIT.split(text) if p.strip()] or [text]
+        paragraphs = split_text_into_paragraphs(text)
         normalized_units = normalizer.normalize_batch(paragraphs, punc_norm=True)
 
     phonemes = phonemize_batch(

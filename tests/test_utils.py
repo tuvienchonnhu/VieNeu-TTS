@@ -3,6 +3,8 @@ import pytest
 from vieneu.utils import _linear_overlap_add, extract_speech_ids
 from vieneu_utils.core_utils import (
     split_text_into_chunks,
+    split_text_into_chunks_with_gaps,
+    split_into_chunks_v2,
     split_into_sentences,
     pack_sentences_into_chunks,
     join_audio_chunks,
@@ -29,6 +31,49 @@ def test_split_text_paragraphs():
     assert len(chunks) == 2
     assert "Đoạn 1" in chunks[0]
     assert "Đoạn 2" in chunks[1]
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
+def test_manual_line_breaks_do_not_split_sentences(line_break):
+    plain_text = "Câu đầu tiên được viết liền mạch. Câu tiếp theo cũng vậy."
+    wrapped_text = plain_text.replace("viết liền mạch", f"viết{line_break}liền mạch")
+
+    assert split_text_into_chunks(wrapped_text) == split_text_into_chunks(plain_text)
+    assert split_text_into_chunks_with_gaps(wrapped_text) == split_text_into_chunks_with_gaps(plain_text)
+
+    plain_phones = "cau dau tien duoc viet lien mach. cau tiep theo cung vay."
+    wrapped_phones = plain_phones.replace("viet lien", f"viet{line_break}lien")
+    assert split_into_chunks_v2(wrapped_phones) == split_into_chunks_v2(plain_phones)
+
+
+def test_blank_line_still_preserves_paragraph_break():
+    chunks, gaps = split_text_into_chunks_with_gaps("Đoạn một.\n\nĐoạn hai.")
+    assert len(chunks) == 2
+    assert gaps == ["para"]
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
+def test_tts_normalization_joins_manual_line_breaks(line_break):
+    from vieneu_utils.phonemize_text import (
+        normalize_to_chunks_v3_with_gaps,
+        phonemize_to_chunks,
+    )
+
+    text = "Hôm nay trời đẹp, chúng ta cùng đi dạo quanh hồ."
+    wrapped_text = text.replace("đẹp, chúng ta", f"đẹp,{line_break}chúng ta")
+
+    assert normalize_to_chunks_v3_with_gaps(wrapped_text) == normalize_to_chunks_v3_with_gaps(text)
+    assert phonemize_to_chunks(wrapped_text) == phonemize_to_chunks(text)
+
+
+def test_tts_normalization_keeps_blank_line_paragraph_pause():
+    from vieneu_utils.phonemize_text import normalize_to_chunks_v3_with_gaps
+
+    chunks, gaps = normalize_to_chunks_v3_with_gaps(
+        "Đây là đoạn văn thứ nhất.\n\nĐây là đoạn văn thứ hai."
+    )
+    assert len(chunks) == 2
+    assert gaps == ["para"]
 
 # --- Sentence splitting (quote-aware) ---
 
