@@ -103,6 +103,7 @@ pydub==0.25.1
 pygments==2.19.2
 pyparsing==3.2.5
 pyreadline3==3.5.4
+PyMuPDF>=1.25.0
 python-dateutil==2.9.0.post0
 python-multipart==0.0.20
 pytz==2025.2

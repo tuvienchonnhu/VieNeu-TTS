@@ -28,7 +28,7 @@ import gc
 
 # PDF text extraction
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz
     HAS_FITZ = True
 except ImportError:
     HAS_FITZ = False
