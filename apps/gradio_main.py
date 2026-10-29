@@ -2249,6 +2249,11 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     visible=False,
                     elem_classes="download-btn"
                 )
+                subtitle_download_btn = gr.DownloadButton(
+                    "📝 Tải phụ đề SRT (mốc thời gian ước tính)",
+                    variant="secondary",
+                    visible=False,
+                )
                 # Only claim a watermark when the real watermarker (resemble-perth) is importable —
                 # otherwise the SDK silently skips watermarking (issue #191).
                 gr.Markdown(
@@ -2428,6 +2433,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate_conv.click(lambda: gr.update(visible=False), outputs=[download_btn])
+        btn_generate_conv.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_conv.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         conv_gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2458,6 +2464,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate.click(lambda: gr.update(visible=False), outputs=[download_btn])
+        btn_generate.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2471,6 +2478,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[download_btn])
+        btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_clone.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         clone_gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2552,11 +2560,30 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                 return gr.update(value=audio_path, visible=True)
             return gr.update(visible=False)
 
+        def on_subtitles_generated(text, audio_path):
+            """Create sentence-level SRT subtitles using the generated audio duration."""
+            if not text or not audio_path or not os.path.exists(audio_path):
+                return gr.update(visible=False)
+
+            from apps.text_subtitles import build_estimated_srt
+
+            subtitle_text = build_estimated_srt(text, sf.info(audio_path).duration)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8-sig", suffix=".srt", delete=False
+            ) as subtitle_file:
+                subtitle_file.write(subtitle_text)
+                return gr.update(value=subtitle_file.name, visible=True)
+
         # Connect to generation events (must be after gen_event/conv_gen_event are defined)
         gen_event.then(
             fn=on_audio_generated,
             inputs=[audio_output],
             outputs=[download_btn]
+        )
+        gen_event.then(
+            fn=on_subtitles_generated,
+            inputs=[text_input, audio_output],
+            outputs=[subtitle_download_btn],
         )
         conv_gen_event.then(
             fn=on_audio_generated,
@@ -2564,6 +2591,11 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[download_btn]
         )
         clone_gen_event.then(fn=on_audio_generated, inputs=[audio_output], outputs=[download_btn])
+        clone_gen_event.then(
+            fn=on_subtitles_generated,
+            inputs=[clone_text_input, audio_output],
+            outputs=[subtitle_download_btn],
+        )
 
         # --- SRT → speech ---
         def _srt_voices():
@@ -2598,12 +2630,13 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output],
         )
         btn_generate_srt.click(lambda: gr.update(visible=False), outputs=[download_btn])
+        btn_generate_srt.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_srt.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         srt_gen_event.then(fn=on_audio_generated, inputs=[audio_output], outputs=[download_btn])
         # Also connect the stop button to hide download
         btn_stop.click(
-            fn=lambda: gr.update(visible=False),
-            outputs=[download_btn]
+            fn=lambda: (gr.update(visible=False), gr.update(visible=False)),
+            outputs=[download_btn, subtitle_download_btn]
         )
 
         # Persistence: Restore UI state on load
