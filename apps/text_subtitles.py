@@ -1,10 +1,13 @@
-"""Create downloadable SRT subtitles for generated speech."""
+"""Create subtitles aligned to the generated audio chunks."""
 from __future__ import annotations
 
-import math
+import os
+
+import numpy as np
 
 from vieneu_utils.core_utils import (
     pack_sentences_into_chunks,
+    pause_pad_samples,
     split_into_sentences,
     split_text_into_paragraphs,
 )
@@ -17,39 +20,97 @@ def _format_timestamp(milliseconds: int) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
 
-def build_estimated_srt(text: str, duration_seconds: float, max_chars: int = 84) -> str:
-    """Build sentence-sized captions with timestamps estimated from text length."""
+def _captions_for_chunk(text: str) -> list[str]:
     captions = []
     for paragraph in split_text_into_paragraphs(text):
         sentences = split_into_sentences(paragraph)
         for sentence in sentences:
-            captions.extend(pack_sentences_into_chunks([sentence], max_chars=max_chars))
+            captions.extend(pack_sentences_into_chunks([sentence], max_chars=84))
+    return [caption.strip() for caption in captions if caption.strip()] or [text.strip()]
 
-    if not captions:
-        raise ValueError("Không có nội dung để tạo phụ đề.")
-    if not math.isfinite(duration_seconds) or duration_seconds <= 0:
-        raise ValueError("Thời lượng audio phải là số hữu hạn lớn hơn 0.")
 
-    weights = [max(1, len(caption.strip())) for caption in captions]
-    total_weight = sum(weights)
-    duration_ms = max(round(duration_seconds * 1_000), len(captions))
+def build_aligned_srt(
+    text_chunks: list[str],
+    audio_chunks: list[np.ndarray],
+    sample_rate: int,
+    *,
+    silence_ps: list[float] | None = None,
+    silence_p: float = 0.0,
+    gap_samples: list[int] | None = None,
+) -> str:
+    """Use actual chunk durations and join pauses; divide each chunk among its sentences."""
+    if not text_chunks or len(text_chunks) != len(audio_chunks):
+        raise ValueError("Số đoạn văn bản phải khớp với số đoạn audio.")
+    if sample_rate <= 0:
+        raise ValueError("Sample rate phải lớn hơn 0.")
+    if silence_ps is not None and gap_samples is not None:
+        raise ValueError("Chỉ truyền silence_ps hoặc gap_samples, không truyền đồng thời.")
+    if gap_samples is not None and len(gap_samples) != len(text_chunks) - 1:
+        raise ValueError("Số khoảng nghỉ phải bằng số ranh giới giữa các đoạn audio.")
+    if silence_ps is not None and len(silence_ps) != len(text_chunks) - 1:
+        raise ValueError("Số khoảng nghỉ phải bằng số ranh giới giữa các đoạn audio.")
 
-    blocks = []
-    elapsed_weight = 0
-    start_ms = 0
-    for index, (caption, weight) in enumerate(zip(captions, weights), start=1):
-        elapsed_weight += weight
-        end_ms = (
-            duration_ms
-            if index == len(captions)
-            else round(duration_ms * elapsed_weight / total_weight)
-        )
-        end_ms = min(max(end_ms, start_ms + 1), duration_ms - (len(captions) - index))
-        blocks.append(
-            f"{index}\n"
-            f"{_format_timestamp(start_ms)} --> {_format_timestamp(end_ms)}\n"
-            f"{caption.strip()}"
-        )
-        start_ms = end_ms
+    gaps = []
+    for index in range(len(text_chunks) - 1):
+        if gap_samples is not None:
+            gap = gap_samples[index]
+        elif silence_ps is not None:
+            gap = pause_pad_samples(
+                np.asarray(audio_chunks[index], dtype=np.float32),
+                np.asarray(audio_chunks[index + 1], dtype=np.float32),
+                sample_rate,
+                silence_ps[index],
+            )
+        else:
+            gap = int(sample_rate * silence_p)
+        if gap < 0:
+            raise ValueError("Khoảng nghỉ audio không thể âm.")
+        gaps.append(gap)
 
+    entries = []
+    cursor = 0
+    for index, (text, audio) in enumerate(zip(text_chunks, audio_chunks)):
+        samples = np.asarray(audio).size
+        if samples <= 0:
+            raise ValueError("Không thể tạo phụ đề cho đoạn audio rỗng.")
+
+        captions = _captions_for_chunk(text)
+        weights = [max(1, len(caption)) for caption in captions]
+        total_weight = sum(weights)
+        chunk_start = cursor
+        elapsed_weight = 0
+        for caption, weight in zip(captions, weights):
+            elapsed_weight += weight
+            start = chunk_start + round(samples * (elapsed_weight - weight) / total_weight)
+            end = chunk_start + round(samples * elapsed_weight / total_weight)
+            entries.append((caption, start, max(start + 1, end)))
+
+        cursor += samples
+        if index < len(gaps):
+            cursor += gaps[index]
+
+    blocks = [
+        f"{index}\n"
+        f"{_format_timestamp(round(start * 1_000 / sample_rate))} --> "
+        f"{_format_timestamp(round(end * 1_000 / sample_rate))}\n"
+        f"{caption}"
+        for index, (caption, start, end) in enumerate(entries, start=1)
+    ]
     return "\n\n".join(blocks) + "\n"
+
+
+def write_aligned_srt(
+    audio_path: str,
+    text_chunks: list[str],
+    audio_chunks: list[np.ndarray],
+    sample_rate: int,
+    **join_options,
+) -> str:
+    """Write an SRT beside the audio file and return its path."""
+    subtitle_path = os.path.splitext(audio_path)[0] + ".srt"
+    subtitle = build_aligned_srt(
+        text_chunks, audio_chunks, sample_rate, **join_options
+    )
+    with open(subtitle_path, "w", encoding="utf-8-sig", newline="\n") as file:
+        file.write(subtitle)
+    return subtitle_path

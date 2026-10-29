@@ -1,43 +1,83 @@
 import re
 
+import numpy as np
 import pytest
 
-from apps.text_subtitles import build_estimated_srt
+from apps.text_subtitles import build_aligned_srt, write_aligned_srt
 
 
-def test_build_estimated_srt_creates_ordered_sentence_cues():
-    subtitle = build_estimated_srt(
-        "Câu thứ nhất. Câu thứ hai dài hơn.", duration_seconds=10
+def test_srt_timestamps_follow_exact_audio_chunk_lengths_and_gaps():
+    subtitle = build_aligned_srt(
+        ["Câu thứ nhất.", "Câu thứ hai dài hơn."],
+        [np.ones(1_000, dtype=np.float32), np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+        gap_samples=[500],
     )
     cues = subtitle.strip().split("\n\n")
 
     assert len(cues) == 2
-    assert cues[0].startswith("1\n00:00:00,000 --> ")
-    assert "Câu thứ nhất." in cues[0]
-    assert cues[1].startswith("2\n")
-    assert "Câu thứ hai dài hơn." in cues[1]
+    assert cues[0] == "1\n00:00:00,000 --> 00:00:01,000\nCâu thứ nhất."
+    assert cues[1] == "2\n00:00:01,500 --> 00:00:03,500\nCâu thứ hai dài hơn."
 
+
+def test_srt_uses_actual_padding_for_minimum_pause_join():
+    audio = [
+        np.ones(1_000, dtype=np.float32),
+        np.ones(2_000, dtype=np.float32),
+    ]
+    subtitle = build_aligned_srt(
+        ["GIỮ GÌN OAI NGHI TRONG GIỜ HỌC", "Nội dung bài học bắt đầu ở đây."],
+        audio,
+        sample_rate=1_000,
+        silence_ps=[0.5],
+    )
+
+    cues = subtitle.strip().split("\n\n")
+    assert cues[0].endswith("00:00:01,000\nGIỮ GÌN OAI NGHI TRONG GIỜ HỌC")
+    assert cues[1].startswith("2\n00:00:01,500 --> 00:00:03,500\n")
+
+
+def test_multiple_sentences_split_within_chunk_duration():
+    subtitle = build_aligned_srt(
+        ["Câu ngắn. Câu dài hơn một chút."],
+        [np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+    )
+    cues = subtitle.strip().split("\n\n")
+
+    assert len(cues) == 2
     first_end = re.search(r"--> (.+)", cues[0]).group(1)
     second_start = re.search(r"\n(.+) -->", cues[1]).group(1)
     assert first_end == second_start
-    assert cues[1].endswith("00:00:10,000\nCâu thứ hai dài hơn.")
+    assert cues[0].startswith("1\n00:00:00,000 --> ")
+    assert cues[1].endswith("00:00:02,000\nCâu dài hơn một chút.")
 
 
-def test_build_estimated_srt_preserves_paragraph_and_uppercase_heading():
-    subtitle = build_estimated_srt(
-        "GIỮ GÌN OAI NGHI TRONG GIỜ HỌC\nNội dung bài học bắt đầu ở đây.",
-        duration_seconds=8,
+def test_srt_rejects_mismatched_chunks_and_audio():
+    with pytest.raises(ValueError, match="khớp"):
+        build_aligned_srt(["Câu."], [], sample_rate=24_000)
+
+
+def test_srt_rejects_invalid_pause_count():
+    with pytest.raises(ValueError, match="khoảng nghỉ"):
+        build_aligned_srt(
+            ["Một câu.", "Câu nữa."],
+            [np.ones(100), np.ones(100)],
+            sample_rate=100,
+            gap_samples=[],
+        )
+
+
+def test_write_aligned_srt_creates_sidecar_next_to_audio(tmp_path):
+    audio_path = tmp_path / "speech.wav"
+    audio_path.touch()
+
+    subtitle_path = write_aligned_srt(
+        str(audio_path),
+        ["Một câu."],
+        [np.ones(1_000, dtype=np.float32)],
+        sample_rate=1_000,
     )
 
-    assert "GIỮ GÌN OAI NGHI TRONG GIỜ HỌC" in subtitle
-    assert "Nội dung bài học bắt đầu ở đây." in subtitle
-    assert subtitle.count("-->") == 2
-
-
-@pytest.mark.parametrize(
-    ("text", "duration"),
-    [("", 2), ("   ", 2), ("Có nội dung.", 0)],
-)
-def test_build_estimated_srt_rejects_empty_text_or_duration(text, duration):
-    with pytest.raises(ValueError):
-        build_estimated_srt(text, duration)
+    assert subtitle_path == str(tmp_path / "speech.srt")
+    assert "00:00:01,000" in (tmp_path / "speech.srt").read_text(encoding="utf-8-sig")

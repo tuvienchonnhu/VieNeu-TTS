@@ -1055,6 +1055,15 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 sf.write(tmp.name, wav, sr_v3)
                 out_path_v3 = tmp.name
+            from apps.text_subtitles import write_aligned_srt
+
+            write_aligned_srt(
+                out_path_v3,
+                v3_chunks,
+                v3_wavs,
+                sr_v3,
+                silence_ps=gaps_to_silence(v3_gaps),
+            )
             _dt = time.time() - _t0
             _spd = f", Tốc độ: {len(wav)/sr_v3/_dt:.2f}x realtime" if _dt > 0 else ""
             yield out_path_v3, f"✅ Hoàn tất! ({v3_label}, Thời gian: {_dt:.2f}s{_spd})"
@@ -1085,6 +1094,9 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         yield None, f"🚀 Bắt đầu tổng hợp {backend_name}{batch_info}{batch_size_info} ({total_chunks} đoạn)..."
         
         all_wavs = []
+        subtitle_text_chunks = []
+        subtitle_audio_chunks = []
+        subtitle_source_chunks = []
         sr = 24000
         
         start_time = time.time()
@@ -1110,6 +1122,9 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     
                     if chunk_wav is not None and len(chunk_wav) > 0:
                         all_wavs.append(chunk_wav)
+                        subtitle_text_chunks.append(chunk.text)
+                        subtitle_audio_chunks.append(chunk_wav)
+                        subtitle_source_chunks.append(chunk)
                         # Add silence between Gradio-level chunks for Turbo
                         if i < total_chunks - 1:
                             sil_dur = get_silence_duration_v2(chunk)
@@ -1157,9 +1172,12 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     average_batch_duration = total_batch_duration / completed_batches
                     estimated_total = average_batch_duration * num_batches
                     estimated_remaining = average_batch_duration * max(0, num_batches - completed_batches)
-                    for chunk_wav in batch_wavs:
+                    for chunk, chunk_wav in zip(current_batch, batch_wavs):
                         if chunk_wav is not None and len(chunk_wav) > 0:
                             all_wavs.append(chunk_wav)
+                            subtitle_text_chunks.append(chunk)
+                            subtitle_audio_chunks.append(chunk_wav)
+                            subtitle_source_chunks.append(chunk)
                     yield None, (
                         f"✅ Xong batch {batch_idx+1}/{num_batches} "
                         f"(trung bình batch: {_format_duration(average_batch_duration)}, "
@@ -1184,6 +1202,9 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     )
                     if chunk_wav is not None and len(chunk_wav) > 0:
                         all_wavs.append(chunk_wav)
+                        subtitle_text_chunks.append(chunk)
+                        subtitle_audio_chunks.append(chunk_wav)
+                        subtitle_source_chunks.append(chunk)
             
             if not all_wavs:
                 yield None, "❌ Không sinh được audio nào."
@@ -1199,6 +1220,28 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 sf.write(tmp.name, final_wav, sr)
                 output_path = tmp.name
+            from apps.text_subtitles import write_aligned_srt
+
+            if is_v2_turbo:
+                subtitle_gap_samples = [
+                    int(sr * get_silence_duration_v2(chunk))
+                    for chunk in subtitle_source_chunks[:-1]
+                ]
+                write_aligned_srt(
+                    output_path,
+                    subtitle_text_chunks,
+                    subtitle_audio_chunks,
+                    sr,
+                    gap_samples=subtitle_gap_samples,
+                )
+            else:
+                write_aligned_srt(
+                    output_path,
+                    subtitle_text_chunks,
+                    subtitle_audio_chunks,
+                    sr,
+                    silence_p=silence_p,
+                )
             
             process_time = time.time() - start_time
             backend_info = f" (Backend: {'LMDeploy 🚀' if using_lmdeploy else 'Standard 📦'})"
@@ -1389,6 +1432,18 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
 DEFAULT_CLONE_TEXT = "Xin chào, đây là giọng nói vừa được nhân bản từ đoạn audio mẫu của bạn. Nghe có giống không?"
 
 synthesize_speech_with_estimate = wrap_with_estimate(synthesize_speech)
+
+
+def synthesize_speech_with_subtitles(*args):
+    """Return the generated SRT directly with the audio to avoid a chained file input."""
+    for audio_path, status, estimate in synthesize_speech_with_estimate(*args):
+        subtitle_update = gr.update(visible=False)
+        if isinstance(audio_path, str) and os.path.exists(audio_path):
+            subtitle_path = os.path.splitext(audio_path)[0] + ".srt"
+            if os.path.exists(subtitle_path):
+                subtitle_update = gr.update(value=subtitle_path, visible=True)
+        yield audio_path, status, estimate, subtitle_update
+
 
 def synthesize_conversation_with_empty_estimate(*args):
     for audio_path, status in synthesize_conversation(*args):
@@ -2250,9 +2305,13 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     elem_classes="download-btn"
                 )
                 subtitle_download_btn = gr.DownloadButton(
-                    "📝 Tải phụ đề SRT (mốc thời gian ước tính)",
+                    "📝 Tải phụ đề SRT (khớp thời lượng audio từng đoạn)",
                     variant="secondary",
                     visible=False,
+                )
+                gr.Markdown(
+                    "Mốc bắt đầu/kết thúc từng đoạn lấy theo audio đã tạo; nếu một đoạn có nhiều câu, "
+                    "thời gian trong đoạn được chia theo độ dài câu."
                 )
                 # Only claim a watermark when the real watermarker (resemble-perth) is importable —
                 # otherwise the SDK silently skips watermarking (issue #191).
@@ -2456,12 +2515,12 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
         
         # --- Standard Generation Handlers ---
         gen_event = btn_generate.click(
-            fn=synthesize_speech_with_estimate,
+            fn=synthesize_speech_with_subtitles,
             inputs=[text_input, voice_select, custom_audio, custom_text, current_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
                     denoise_checkbox, session_id_state],
-            outputs=[audio_output, status_output, estimate_output]
+            outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate.click(lambda: gr.update(visible=False), outputs=[download_btn])
         btn_generate.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
@@ -2470,12 +2529,12 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
 
         # --- Voice Cloning: same synthesis path, clone mode, its own text box ---
         clone_gen_event = btn_generate_clone.click(
-            fn=synthesize_speech_with_estimate,
+            fn=synthesize_speech_with_subtitles,
             inputs=[clone_text_input, voice_select, custom_audio, custom_text, clone_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
                     denoise_checkbox, session_id_state],
-            outputs=[audio_output, status_output, estimate_output]
+            outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[download_btn])
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
@@ -2555,24 +2614,10 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
 
         # --- Download Button Event Handlers ---
         def on_audio_generated(audio_path):
-            """Show download button when audio is generated."""
+            """Show the generated audio download."""
             if audio_path and os.path.exists(audio_path):
                 return gr.update(value=audio_path, visible=True)
             return gr.update(visible=False)
-
-        def on_subtitles_generated(text, audio_path):
-            """Create sentence-level SRT subtitles using the generated audio duration."""
-            if not text or not audio_path or not os.path.exists(audio_path):
-                return gr.update(visible=False)
-
-            from apps.text_subtitles import build_estimated_srt
-
-            subtitle_text = build_estimated_srt(text, sf.info(audio_path).duration)
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8-sig", suffix=".srt", delete=False
-            ) as subtitle_file:
-                subtitle_file.write(subtitle_text)
-                return gr.update(value=subtitle_file.name, visible=True)
 
         # Connect to generation events (must be after gen_event/conv_gen_event are defined)
         gen_event.then(
@@ -2580,21 +2625,15 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[audio_output],
             outputs=[download_btn]
         )
-        gen_event.then(
-            fn=on_subtitles_generated,
-            inputs=[text_input, audio_output],
-            outputs=[subtitle_download_btn],
-        )
         conv_gen_event.then(
             fn=on_audio_generated,
             inputs=[audio_output],
             outputs=[download_btn]
         )
-        clone_gen_event.then(fn=on_audio_generated, inputs=[audio_output], outputs=[download_btn])
         clone_gen_event.then(
-            fn=on_subtitles_generated,
-            inputs=[clone_text_input, audio_output],
-            outputs=[subtitle_download_btn],
+            fn=on_audio_generated,
+            inputs=[audio_output],
+            outputs=[download_btn],
         )
 
         # --- SRT → speech ---
