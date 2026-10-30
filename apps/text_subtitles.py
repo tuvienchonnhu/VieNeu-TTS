@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import numpy as np
 
@@ -11,6 +12,8 @@ from vieneu_utils.core_utils import (
     split_into_sentences,
     split_text_into_paragraphs,
 )
+
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def _format_timestamp(milliseconds: int) -> str:
@@ -27,6 +30,41 @@ def _captions_for_chunk(text: str) -> list[str]:
         for sentence in sentences:
             captions.extend(pack_sentences_into_chunks([sentence], max_chars=84))
     return [caption.strip() for caption in captions if caption.strip()] or [text.strip()]
+
+
+def _source_chunks(source_text: str, normalized_chunks: list[str]) -> list[str]:
+    """Recover exact source spelling for each chunk using its normalized words."""
+    source_words = list(_WORD.finditer(source_text))
+    source_cursor = 0
+    source_char_cursor = 0
+    result = []
+
+    for chunk in normalized_chunks:
+        word_cursor = source_cursor
+        matched = []
+        for word in _WORD.finditer(chunk):
+            target = word.group().casefold()
+            for index in range(word_cursor, len(source_words)):
+                if source_words[index].group().casefold() == target:
+                    matched.append(index)
+                    word_cursor = index + 1
+                    break
+
+        if not matched:
+            result.append(chunk)
+            continue
+
+        last = matched[-1]
+        start = source_char_cursor
+        end = source_words[last].end()
+        while end < len(source_text) and source_text[end] in ".,!?;:…)]}\"'’”":
+            end += 1
+        source = source_text[start:end].strip()
+        result.append(source or chunk)
+        source_cursor = last + 1
+        source_char_cursor = end
+
+    return result
 
 
 def build_aligned_srt(
@@ -104,10 +142,14 @@ def write_aligned_srt(
     text_chunks: list[str],
     audio_chunks: list[np.ndarray],
     sample_rate: int,
+    *,
+    source_text: str | None = None,
     **join_options,
 ) -> str:
     """Write an SRT beside the audio file and return its path."""
     subtitle_path = os.path.splitext(audio_path)[0] + ".srt"
+    if source_text is not None:
+        text_chunks = _source_chunks(source_text, text_chunks)
     subtitle = build_aligned_srt(
         text_chunks, audio_chunks, sample_rate, **join_options
     )

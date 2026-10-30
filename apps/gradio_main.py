@@ -1062,6 +1062,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                 v3_chunks,
                 v3_wavs,
                 sr_v3,
+                source_text=raw_text,
                 silence_ps=gaps_to_silence(v3_gaps),
             )
             _dt = time.time() - _t0
@@ -1232,6 +1233,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     subtitle_text_chunks,
                     subtitle_audio_chunks,
                     sr,
+                    source_text=raw_text,
                     gap_samples=subtitle_gap_samples,
                 )
             else:
@@ -1240,6 +1242,7 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     subtitle_text_chunks,
                     subtitle_audio_chunks,
                     sr,
+                    source_text=raw_text,
                     silence_p=silence_p,
                 )
             

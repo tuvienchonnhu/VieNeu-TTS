@@ -81,3 +81,23 @@ def test_write_aligned_srt_creates_sidecar_next_to_audio(tmp_path):
 
     assert subtitle_path == str(tmp_path / "speech.srt")
     assert "00:00:01,000" in (tmp_path / "speech.srt").read_text(encoding="utf-8-sig")
+
+
+def test_write_aligned_srt_preserves_original_case_and_spelling(tmp_path):
+    audio_path = tmp_path / "speech.wav"
+    audio_path.touch()
+
+    subtitle_path = write_aligned_srt(
+        str(audio_path),
+        ["giữ gìn oai nghi trong giờ học.", "các em chú ý nghe giảng."],
+        [np.ones(1_000, dtype=np.float32), np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+        source_text="GIỮ GÌN OAI NGHI TRONG GIỜ HỌC.\nCác em chú ý nghe giảng.",
+        gap_samples=[500],
+    )
+
+    subtitle = (tmp_path / "speech.srt").read_text(encoding="utf-8-sig")
+    assert "GIỮ GÌN OAI NGHI TRONG GIỜ HỌC." in subtitle
+    assert "Các em chú ý nghe giảng." in subtitle
+    assert "giữ gìn oai nghi" not in subtitle
+    assert subtitle_path == str(tmp_path / "speech.srt")
