@@ -880,7 +880,8 @@ def resolve_voice_id(v_id: str) -> str:
 def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: str,
                       mode_tab: str, generation_mode: str, use_batch: bool, max_batch_size_run: int,
                       temperature: float, max_chars_chunk: int,
-                      denoise_ref: bool = True, session_id: str = None):
+                      denoise_ref: bool = True, session_id: str = None,
+                      use_ctc_alignment: bool = True):
     """Synthesis with optimization support and max batch size control"""
     global tts, current_backbone, current_codec, model_loaded, using_lmdeploy
     
@@ -1057,17 +1058,27 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                 out_path_v3 = tmp.name
             from apps.text_subtitles import write_aligned_srt
 
+            yield None, "📝 Đang căn chỉnh phụ đề theo âm thanh..."
+            alignment_warnings = []
             write_aligned_srt(
                 out_path_v3,
                 v3_chunks,
                 v3_wavs,
                 sr_v3,
                 source_text=raw_text,
+                use_ctc_alignment=use_ctc_alignment,
+                alignment_warnings=alignment_warnings,
                 silence_ps=gaps_to_silence(v3_gaps),
             )
             _dt = time.time() - _t0
             _spd = f", Tốc độ: {len(wav)/sr_v3/_dt:.2f}x realtime" if _dt > 0 else ""
-            yield out_path_v3, f"✅ Hoàn tất! ({v3_label}, Thời gian: {_dt:.2f}s{_spd})"
+            alignment_status = (
+                " ⚠️ " + " ".join(alignment_warnings) if alignment_warnings else ""
+            )
+            yield out_path_v3, (
+                f"✅ Hoàn tất! ({v3_label}, Thời gian: {_dt:.2f}s{_spd})"
+                f"{alignment_status}"
+            )
             cleanup_gpu_memory()
             return
         # ========================== end v3 TURBO BRANCH ======================
@@ -1223,6 +1234,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                 output_path = tmp.name
             from apps.text_subtitles import write_aligned_srt
 
+            yield None, "📝 Đang căn chỉnh phụ đề theo âm thanh..."
+            alignment_warnings = []
             if is_v2_turbo:
                 subtitle_gap_samples = [
                     int(sr * get_silence_duration_v2(chunk))
@@ -1234,6 +1247,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     subtitle_audio_chunks,
                     sr,
                     source_text=raw_text,
+                    use_ctc_alignment=use_ctc_alignment,
+                    alignment_warnings=alignment_warnings,
                     gap_samples=subtitle_gap_samples,
                 )
             else:
@@ -1243,6 +1258,8 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     subtitle_audio_chunks,
                     sr,
                     source_text=raw_text,
+                    use_ctc_alignment=use_ctc_alignment,
+                    alignment_warnings=alignment_warnings,
                     silence_p=silence_p,
                 )
             
@@ -1251,7 +1268,13 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
             
             
-            yield output_path, f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info}){backend_info}"
+            alignment_status = (
+                " ⚠️ " + " ".join(alignment_warnings) if alignment_warnings else ""
+            )
+            yield output_path, (
+                f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info})"
+                f"{backend_info}{alignment_status}"
+            )
             
             # Cleanup memory
             if using_lmdeploy and hasattr(tts, 'cleanup_memory'):
@@ -2308,13 +2331,21 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     elem_classes="download-btn"
                 )
                 subtitle_download_btn = gr.DownloadButton(
-                    "📝 Tải phụ đề SRT (khớp thời lượng audio từng đoạn)",
+                    "📝 Tải phụ đề SRT",
                     variant="secondary",
                     visible=False,
                 )
+                subtitle_alignment_checkbox = gr.Checkbox(
+                    value=True,
+                    label="Căn chỉnh phụ đề theo âm thanh",
+                    info=(
+                        "Khuyến nghị. Lần đầu tải mô hình tiếng Việt khoảng 380 MB, "
+                        "lưu trong .models trên ổ chứa project; bỏ chọn để dùng ước lượng."
+                    ),
+                )
                 gr.Markdown(
-                    "Mốc bắt đầu/kết thúc từng đoạn lấy theo audio đã tạo; nếu một đoạn có nhiều câu, "
-                    "thời gian trong đoạn được chia theo độ dài câu."
+                    "Phụ đề giữ nguyên chữ hoa/thường từ văn bản nhập; căn chỉnh CTC lấy mốc "
+                    "từng câu theo âm thanh đã tạo và tính cả khoảng nghỉ giữa các đoạn."
                 )
                 # Only claim a watermark when the real watermarker (resemble-perth) is importable —
                 # otherwise the SDK silently skips watermarking (issue #191).
@@ -2522,7 +2553,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[text_input, voice_select, custom_audio, custom_text, current_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
-                    denoise_checkbox, session_id_state],
+                    denoise_checkbox, session_id_state, subtitle_alignment_checkbox],
             outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate.click(lambda: gr.update(visible=False), outputs=[download_btn])
@@ -2536,7 +2567,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[clone_text_input, voice_select, custom_audio, custom_text, clone_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
-                    denoise_checkbox, session_id_state],
+                    denoise_checkbox, session_id_state, subtitle_alignment_checkbox],
             outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[download_btn])

@@ -53,6 +53,70 @@ def test_multiple_sentences_split_within_chunk_duration():
     assert cues[1].endswith("00:00:02,000\nCâu dài hơn một chút.")
 
 
+def test_ctc_alignment_uses_acoustic_sentence_boundaries():
+    class FakeAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            if len(captions) == 2:
+                assert captions == ["Câu ngắn.", "Câu dài hơn một chút."]
+                return [(100, 500), (1_100, 1_900)]
+            assert captions == ["Đoạn tiếp."]
+            return [(200, 800)]
+
+    subtitle = build_aligned_srt(
+        ["Câu ngắn. Câu dài hơn một chút.", "Đoạn tiếp."],
+        [np.ones(2_000, dtype=np.float32), np.ones(1_000, dtype=np.float32)],
+        sample_rate=1_000,
+        gap_samples=[300],
+        aligner=FakeAligner(),
+    )
+    cues = subtitle.strip().split("\n\n")
+
+    assert cues[0] == "1\n00:00:00,100 --> 00:00:00,500\nCâu ngắn."
+    assert cues[1] == "2\n00:00:01,100 --> 00:00:01,900\nCâu dài hơn một chút."
+    assert cues[2] == "3\n00:00:02,500 --> 00:00:03,100\nĐoạn tiếp."
+
+
+def test_ctc_alignment_uses_display_sentences_when_normalization_changes_punctuation():
+    class FakeAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            assert captions == ["Câu thứ nhất.", "Câu thứ hai."]
+            return [(100, 800), (900, 1_900)]
+
+    warnings = []
+    subtitle = build_aligned_srt(
+        ["Câu thứ nhất câu thứ hai"],
+        [np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+        display_chunks=["Câu thứ nhất. Câu thứ hai."],
+        aligner=FakeAligner(),
+        alignment_warnings=warnings,
+    )
+
+    cues = subtitle.strip().split("\n\n")
+    assert cues[0] == "1\n00:00:00,100 --> 00:00:00,800\nCâu thứ nhất."
+    assert cues[1] == "2\n00:00:00,900 --> 00:00:01,900\nCâu thứ hai."
+    assert warnings == []
+
+
+def test_failed_ctc_alignment_reports_character_estimate_fallback():
+    class FailedAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            raise ValueError("không căn chỉnh được")
+
+    warnings = []
+    build_aligned_srt(
+        ["Một câu. Câu tiếp theo."],
+        [np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+        aligner=FailedAligner(),
+        alignment_warnings=warnings,
+    )
+
+    assert len(warnings) == 1
+    assert "không căn chỉnh được" in warnings[0]
+    assert "ước lượng theo ký tự" in warnings[0]
+
+
 def test_srt_rejects_mismatched_chunks_and_audio():
     with pytest.raises(ValueError, match="khớp"):
         build_aligned_srt(["Câu."], [], sample_rate=24_000)
