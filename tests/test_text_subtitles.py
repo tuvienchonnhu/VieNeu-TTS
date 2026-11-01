@@ -33,7 +33,7 @@ def test_srt_uses_actual_padding_for_minimum_pause_join():
     )
 
     cues = subtitle.strip().split("\n\n")
-    assert cues[0].endswith("00:00:01,000\nGIỮ GÌN OAI NGHI TRONG GIỜ HỌC")
+    assert cues[0].endswith("00:00:01,000\nGIỮ GÌN OAI NGHI TRONG GIỜ HỌC.")
     assert cues[1].startswith("2\n00:00:01,500 --> 00:00:03,500\n")
 
 
@@ -130,6 +130,118 @@ def test_srt_rejects_invalid_pause_count():
             sample_rate=100,
             gap_samples=[],
         )
+
+
+def test_estimate_only_run_does_not_report_ctc_failure(caplog):
+    with caplog.at_level("WARNING", logger="apps.text_subtitles"):
+        build_aligned_srt(
+            ["Câu thứ nhất.", "Câu thứ hai."],
+            [np.ones(1_000, dtype=np.float32), np.ones(1_000, dtype=np.float32)],
+            sample_rate=1_000,
+            gap_samples=[200],
+        )
+
+    assert "Căn chỉnh CTC thất bại" not in caplog.text
+
+
+def test_collapsed_ctc_span_falls_back_to_character_estimate():
+    class CollapsedAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            # Viterbi let the first caption eat the chunk; the second gets 1 sample.
+            return [(0, 1_599), (1_599, 1_600)]
+
+    warnings = []
+    subtitle = build_aligned_srt(
+        ["Câu này dài và đầy đủ. Ừ."],
+        [np.ones(1_600, dtype=np.float32)],
+        sample_rate=1_000,
+        aligner=CollapsedAligner(),
+        alignment_warnings=warnings,
+    )
+    cues = subtitle.strip().split("\n\n")
+
+    # Out-of-range spans are rejected silently and the character estimate is used.
+    assert warnings == []
+    # Character estimate for 22 vs 2 characters of a 1.6 s chunk, then the 2-word
+    # cue is widened so it can be read (~0.32 s).
+    assert cues[0] == "1\n00:00:00,000 --> 00:00:01,250\nCâu này dài và đầy đủ."
+    assert cues[1] == "2\n00:00:01,250 --> 00:00:01,600\nỪ."
+
+
+def test_out_of_order_ctc_span_falls_back_to_character_estimate():
+    class ReorderedAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            return [(900, 1_000), (100, 800)]
+
+    warnings = []
+    build_aligned_srt(
+        ["Câu ngắn. Câu dài hơn một chút."],
+        [np.ones(2_000, dtype=np.float32)],
+        sample_rate=1_000,
+        aligner=ReorderedAligner(),
+        alignment_warnings=warnings,
+    )
+
+    assert warnings == []
+
+
+def test_ctc_spans_outside_chunk_are_rejected():
+    class OverflowAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            return [(0, 5_000)]
+
+    warnings = []
+    build_aligned_srt(
+        ["Một câu."],
+        [np.ones(1_000, dtype=np.float32)],
+        sample_rate=1_000,
+        aligner=OverflowAligner(),
+        alignment_warnings=warnings,
+    )
+
+    assert len(warnings) == 1
+
+
+def test_aligner_is_loaded_once_and_shared(monkeypatch):
+    import apps.ctc_alignment as ctc_alignment
+    import apps.text_subtitles as text_subtitles
+
+    loads = []
+
+    class FakeAligner:
+        def align_captions(self, audio, sample_rate, captions):
+            return [(0, len(audio))]
+
+    def fake_load():
+        loads.append(1)
+        return FakeAligner()
+
+    monkeypatch.setattr(text_subtitles, "_ALIGNER", None)
+    monkeypatch.setattr(text_subtitles, "_ALIGNER_ERROR", None)
+    monkeypatch.setattr(ctc_alignment.VietnameseCTCAligner, "load", staticmethod(fake_load))
+
+    assert text_subtitles._load_aligner() is text_subtitles._load_aligner()
+    assert len(loads) == 1
+
+
+def test_aligner_load_failure_is_memoized(monkeypatch):
+    import apps.ctc_alignment as ctc_alignment
+    import apps.text_subtitles as text_subtitles
+
+    loads = []
+
+    def broken_load():
+        loads.append(1)
+        raise RuntimeError("thiếu mô hình")
+
+    monkeypatch.setattr(text_subtitles, "_ALIGNER", None)
+    monkeypatch.setattr(text_subtitles, "_ALIGNER_ERROR", None)
+    monkeypatch.setattr(ctc_alignment.VietnameseCTCAligner, "load", staticmethod(broken_load))
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="thiếu mô hình"):
+            text_subtitles._load_aligner()
+    assert len(loads) == 1
 
 
 def test_write_aligned_srt_creates_sidecar_next_to_audio(tmp_path):
