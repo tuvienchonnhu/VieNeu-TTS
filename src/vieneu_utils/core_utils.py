@@ -21,34 +21,6 @@ def _tokenize_keep_en(s: str) -> List[str]:
     """Tách ``s`` thành token, giữ NGUYÊN mỗi cụm ``<en>...</en>``."""
     return RE_TOKEN_KEEP_EN.findall(s)
 
-
-def split_text_into_paragraphs(text: str) -> List[str]:
-    """Join hard-wrapped lines but preserve blank and all-uppercase heading lines."""
-    if not text:
-        return []
-
-    paragraphs = []
-    for block in RE_PARAGRAPH_BREAK.split(text):
-        current_lines = []
-        for line in RE_INLINE_NEWLINE.split(block):
-            line = line.strip()
-            if not line:
-                continue
-
-            letters = [char for char in line if char.isalpha()]
-            if letters and all(char.isupper() for char in letters):
-                if current_lines:
-                    paragraphs.append(' '.join(current_lines))
-                    current_lines.clear()
-                paragraphs.append(line)
-            else:
-                current_lines.append(line)
-
-        if current_lines:
-            paragraphs.append(' '.join(current_lines))
-    return paragraphs
-
-
 # v1 only
 RE_SENTENCE_END = re.compile(r'(?<=[\.\!\?\…])\s+')
 RE_MINOR_PUNCT  = re.compile(r'(?<=[\,\;\:\-\–\—])\s+')
