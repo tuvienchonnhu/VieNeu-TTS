@@ -3,8 +3,6 @@ import pytest
 from vieneu.utils import _linear_overlap_add, extract_speech_ids
 from vieneu_utils.core_utils import (
     split_text_into_chunks,
-    split_text_into_chunks_with_gaps,
-    split_into_chunks_v2,
     split_into_sentences,
     pack_sentences_into_chunks,
     join_audio_chunks,
