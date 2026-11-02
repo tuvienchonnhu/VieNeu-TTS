@@ -2329,23 +2329,6 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
                     visible=False,
                     elem_classes="download-btn"
                 )
-                subtitle_download_btn = gr.DownloadButton(
-                    "📝 Tải phụ đề SRT",
-                    variant="secondary",
-                    visible=False,
-                )
-                subtitle_alignment_checkbox = gr.Checkbox(
-                    value=True,
-                    label="Căn chỉnh phụ đề theo âm thanh",
-                    info=(
-                        "Khuyến nghị. Lần đầu tải mô hình tiếng Việt khoảng 380 MB, "
-                        "lưu trong .models trên ổ chứa project; bỏ chọn để dùng ước lượng."
-                    ),
-                )
-                gr.Markdown(
-                    "Phụ đề giữ nguyên chữ hoa/thường từ văn bản nhập; căn chỉnh CTC lấy mốc "
-                    "từng câu theo âm thanh đã tạo và tính cả khoảng nghỉ giữa các đoạn."
-                )
                 # Only claim a watermark when the real watermarker (resemble-perth) is importable —
                 # otherwise the SDK silently skips watermarking (issue #191).
                 gr.Markdown(
@@ -2525,7 +2508,6 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate_conv.click(lambda: gr.update(visible=False), outputs=[download_btn])
-        btn_generate_conv.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_conv.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         conv_gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2556,7 +2538,6 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate.click(lambda: gr.update(visible=False), outputs=[download_btn])
-        btn_generate.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2570,7 +2551,6 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
         )
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[download_btn])
-        btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_clone.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         clone_gen_event.then(lambda: gr.update(interactive=False), outputs=btn_stop)
 
@@ -2663,11 +2643,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[audio_output],
             outputs=[download_btn]
         )
-        clone_gen_event.then(
-            fn=on_audio_generated,
-            inputs=[audio_output],
-            outputs=[download_btn],
-        )
+        clone_gen_event.then(fn=on_audio_generated, inputs=[audio_output], outputs=[download_btn])
 
         # --- SRT → speech ---
         def _srt_voices():
@@ -2702,13 +2678,12 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             outputs=[audio_output, status_output, estimate_output],
         )
         btn_generate_srt.click(lambda: gr.update(visible=False), outputs=[download_btn])
-        btn_generate_srt.click(lambda: gr.update(visible=False), outputs=[subtitle_download_btn])
         btn_generate_srt.click(lambda: gr.update(interactive=True), outputs=btn_stop)
         srt_gen_event.then(fn=on_audio_generated, inputs=[audio_output], outputs=[download_btn])
         # Also connect the stop button to hide download
         btn_stop.click(
-            fn=lambda: (gr.update(visible=False), gr.update(visible=False)),
-            outputs=[download_btn, subtitle_download_btn]
+            fn=lambda: gr.update(visible=False),
+            outputs=[download_btn]
         )
 
         # Persistence: Restore UI state on load
