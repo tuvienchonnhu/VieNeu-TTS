@@ -880,8 +880,7 @@ def resolve_voice_id(v_id: str) -> str:
 def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: str,
                       mode_tab: str, generation_mode: str, use_batch: bool, max_batch_size_run: int,
                       temperature: float, max_chars_chunk: int,
-                      denoise_ref: bool = True, session_id: str = None,
-                      use_ctc_alignment: bool = True):
+                      denoise_ref: bool = True, session_id: str = None):
     """Synthesis with optimization support and max batch size control"""
     global tts, current_backbone, current_codec, model_loaded, using_lmdeploy
     
@@ -1056,28 +1055,10 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 sf.write(tmp.name, wav, sr_v3)
                 out_path_v3 = tmp.name
-            from apps.text_subtitles import write_aligned_srt
-
-            yield None, "📝 Đang căn chỉnh phụ đề theo âm thanh..."
-            alignment_warnings = []
-            write_aligned_srt(
-                out_path_v3,
-                v3_chunks,
-                v3_wavs,
-                sr_v3,
-                source_text=raw_text,
-                use_ctc_alignment=use_ctc_alignment,
-                alignment_warnings=alignment_warnings,
-                silence_ps=gaps_to_silence(v3_gaps),
-            )
             _dt = time.time() - _t0
             _spd = f", Tốc độ: {len(wav)/sr_v3/_dt:.2f}x realtime" if _dt > 0 else ""
-            alignment_status = (
-                " ⚠️ " + " ".join(alignment_warnings) if alignment_warnings else ""
-            )
             yield out_path_v3, (
                 f"✅ Hoàn tất! ({v3_label}, Thời gian: {_dt:.2f}s{_spd})"
-                f"{alignment_status}"
             )
             cleanup_gpu_memory()
             return
@@ -1106,9 +1087,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
         yield None, f"🚀 Bắt đầu tổng hợp {backend_name}{batch_info}{batch_size_info} ({total_chunks} đoạn)..."
         
         all_wavs = []
-        subtitle_text_chunks = []
-        subtitle_audio_chunks = []
-        subtitle_source_chunks = []
         sr = 24000
         
         start_time = time.time()
@@ -1134,9 +1112,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     
                     if chunk_wav is not None and len(chunk_wav) > 0:
                         all_wavs.append(chunk_wav)
-                        subtitle_text_chunks.append(chunk.text)
-                        subtitle_audio_chunks.append(chunk_wav)
-                        subtitle_source_chunks.append(chunk)
                         # Add silence between Gradio-level chunks for Turbo
                         if i < total_chunks - 1:
                             sil_dur = get_silence_duration_v2(chunk)
@@ -1187,9 +1162,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     for chunk, chunk_wav in zip(current_batch, batch_wavs):
                         if chunk_wav is not None and len(chunk_wav) > 0:
                             all_wavs.append(chunk_wav)
-                            subtitle_text_chunks.append(chunk)
-                            subtitle_audio_chunks.append(chunk_wav)
-                            subtitle_source_chunks.append(chunk)
                     yield None, (
                         f"✅ Xong batch {batch_idx+1}/{num_batches} "
                         f"(trung bình batch: {_format_duration(average_batch_duration)}, "
@@ -1214,9 +1186,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
                     )
                     if chunk_wav is not None and len(chunk_wav) > 0:
                         all_wavs.append(chunk_wav)
-                        subtitle_text_chunks.append(chunk)
-                        subtitle_audio_chunks.append(chunk_wav)
-                        subtitle_source_chunks.append(chunk)
             
             if not all_wavs:
                 yield None, "❌ Không sinh được audio nào."
@@ -1232,48 +1201,13 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 sf.write(tmp.name, final_wav, sr)
                 output_path = tmp.name
-            from apps.text_subtitles import write_aligned_srt
-
-            yield None, "📝 Đang căn chỉnh phụ đề theo âm thanh..."
-            alignment_warnings = []
-            if is_v2_turbo:
-                subtitle_gap_samples = [
-                    int(sr * get_silence_duration_v2(chunk))
-                    for chunk in subtitle_source_chunks[:-1]
-                ]
-                write_aligned_srt(
-                    output_path,
-                    subtitle_text_chunks,
-                    subtitle_audio_chunks,
-                    sr,
-                    source_text=raw_text,
-                    use_ctc_alignment=use_ctc_alignment,
-                    alignment_warnings=alignment_warnings,
-                    gap_samples=subtitle_gap_samples,
-                )
-            else:
-                write_aligned_srt(
-                    output_path,
-                    subtitle_text_chunks,
-                    subtitle_audio_chunks,
-                    sr,
-                    source_text=raw_text,
-                    use_ctc_alignment=use_ctc_alignment,
-                    alignment_warnings=alignment_warnings,
-                    silence_p=silence_p,
-                )
-            
             process_time = time.time() - start_time
             backend_info = f" (Backend: {'LMDeploy 🚀' if using_lmdeploy else 'Standard 📦'})"
             speed_info = f", Tốc độ: {len(final_wav)/sr/process_time:.2f}x realtime" if process_time > 0 else ""
-            
-            
-            alignment_status = (
-                " ⚠️ " + " ".join(alignment_warnings) if alignment_warnings else ""
-            )
+
             yield output_path, (
                 f"✅ Hoàn tất! (Thời gian: {process_time:.2f}s{speed_info})"
-                f"{backend_info}{alignment_status}"
+                f"{backend_info}"
             )
             
             # Cleanup memory
@@ -1458,17 +1392,6 @@ def synthesize_speech(text: str, voice_choice: str, custom_audio, custom_text: s
 DEFAULT_CLONE_TEXT = "Xin chào, đây là giọng nói vừa được nhân bản từ đoạn audio mẫu của bạn. Nghe có giống không?"
 
 synthesize_speech_with_estimate = wrap_with_estimate(synthesize_speech)
-
-
-def synthesize_speech_with_subtitles(*args):
-    """Return the generated SRT directly with the audio to avoid a chained file input."""
-    for audio_path, status, estimate in synthesize_speech_with_estimate(*args):
-        subtitle_update = gr.update(visible=False)
-        if isinstance(audio_path, str) and os.path.exists(audio_path):
-            subtitle_path = os.path.splitext(audio_path)[0] + ".srt"
-            if os.path.exists(subtitle_path):
-                subtitle_update = gr.update(value=subtitle_path, visible=True)
-        yield audio_path, status, estimate, subtitle_update
 
 
 def synthesize_conversation_with_empty_estimate(*args):
@@ -2530,7 +2453,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
         
         # --- Standard Generation Handlers ---
         gen_event = btn_generate.click(
-            fn=synthesize_speech_with_subtitles,
+            fn=synthesize_speech_with_estimate,
             inputs=[text_input, voice_select, custom_audio, custom_text, current_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
@@ -2543,7 +2466,7 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
 
         # --- Voice Cloning: same synthesis path, clone mode, its own text box ---
         clone_gen_event = btn_generate_clone.click(
-            fn=synthesize_speech_with_subtitles,
+            fn=synthesize_speech_with_estimate,
             inputs=[clone_text_input, voice_select, custom_audio, custom_text, clone_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,

@@ -7,6 +7,7 @@ which provides a unified, tested, and maintained Vietnamese G2P pipeline.
 import functools
 import logging
 import re
+import unicodedata
 from typing import Optional
 from sea_g2p import SEAPipeline, G2P, Normalizer, punc_norm
 
@@ -15,6 +16,142 @@ logger = logging.getLogger("Vieneu.Phonemizer")
 # Tách đoạn theo newline — dùng để normalize theo từng đoạn (ranh giới tự nhiên)
 # trước khi chia chunk, giữ input cho regex backtracking ở mức an toàn.
 RE_NEWLINE_SPLIT = re.compile(r"[\r\n]+")
+# Dòng xuống dòng thủ công (khi dán từ Word/PDF) thường chỉ là chỗ ngắt dòng
+# giữa câu: "Dòng một bị | xuống dòng thủ công.". Nhưng xuống dòng sau một
+# DÒNG TOÀN CHỮ HOA là tiêu đề/mục ("LỜI NÓI ĐẦU", "GIÁO ÁN RÈN NHÂN CÁCH
+# LỚP NGŨ GIỚI ĐỨC HIẾU SINH TẬP I") -> ranh giới câu thật.
+_RE_SENT_END = re.compile(r"[.!?…]$")
+_EDGE_CHARS = "\t ,;:—–-*/|•·+=#~_"
+# Ký tự ngắt dòng cứng: một dòng trống, hoặc ngắt dòng đặc biệt của Word/PDF
+# (``\v`` ``\f`` ``\u2028`` ``\u2029``) — luôn là ranh giới ĐOẠN.
+_HARD_BREAK_RE = re.compile(
+    r"[\r\n]+[ \t]*[\r\n]+|\v+|\f+|\u2028+|\u2029+"
+)
+# Xuống dòng mềm: mặc định chỉ là chỗ ngắt dòng thủ công, nối câu lại.
+_SOFT_BREAK_RE = re.compile(r"[\r\n]+")
+
+
+def _display_line(line: str) -> str:
+    """Dòng đã bỏ ký tự trang trí ở hai đầu (``* MỤC 1 *`` -> ``MỤC 1``)."""
+    return line.strip(_EDGE_CHARS).strip()
+
+
+def _is_heading_line(line: str) -> bool:
+    """Dòng này là tiêu đề/mục, không phải phần tiếp theo của câu phía trên.
+
+    Tiêu đề TOÀN CHỮ HOA: ít nhất 2 từ (nên ``MỤC LỤC`` không tách đoạn), không
+    quá 25 từ, không có dấu kết câu ở cuối (``.`` ``?`` ``!``). Nhờ vậy ``LỜI
+    NÓI ĐẦU``, ``THI CA``, ``GIÁO ÁN RÈN NHÂN CÁCH LỚP NGŨ GIỚI ĐỨC HIẾU SINH
+    TẬP I`` là tiêu đề, còn dòng thường bị xuống dòng hay câu hỏi kết thúc
+    ``?`` vẫn ở lại trong mạch câu.
+    """
+    display = _display_line(line)
+    letters = [c for c in display if c.isalpha()]
+    if len(letters) < 2 or _RE_SENT_END.search(display):
+        return False
+    words = display.split()
+    if len(words) < 2 or len(words) > 25:
+        return False
+    # Chỉ dòng TOÀN CHỮ HOA mới là tiêu đề; dòng thường bị xuống dòng vẫn được
+    # nối vào câu phía trên.
+    return all(c == unicodedata.normalize("NFC", c).upper() for c in letters)
+
+
+def _ends_sentence(line: str) -> bool:
+    return bool(_RE_SENT_END.search(_display_line(line)))
+
+
+def _natural_paragraphs(text: str) -> "list[str]":
+    """Ghép dòng bị xuống dòng thủ công, tách đoạn ở dòng trống hoặc tiêu đề.
+
+    Xuống dòng giữa câu (dòng trước chưa có dấu kết câu và dòng sau không phải
+    tiêu đề) được thay bằng khoảng trắng, để normalizer/tách chunk không cắt
+    câu tại đó.
+
+    Dòng TRỐNG (hoặc các ký tự ngắt dòng Unicode ``\v`` ``\f`` ``\u2028``
+    ``\u2029`` khi dán từ Word/PDF) là dấu ngắt đoạn thật: mỗi DÒNG nằm ngay
+    trước/sau nó là một đoạn riêng, nên xuống dòng sát dòng trống vẫn ngắt câu
+    dù dòng đó chưa có dấu kết câu. Dòng toàn chữ hoa cũng tạo ranh giới mới.
+    """
+    if not text:
+        return []
+
+    paragraphs: list[str] = []
+    for chunk in _HARD_BREAK_RE.split(text):
+        lines: list[str] = []
+        for i, line in enumerate(_SOFT_BREAK_RE.split(chunk)):
+            if not line.strip():
+                continue
+            # Dòng tiêu đề luôn đứng RIÊNG: nó không dính vào đoạn/câu phía trên,
+            # và dòng nội dung ngay sau cũng mở đoạn mới (không bị nối vào tiêu đề).
+            if _is_heading_line(line):
+                if lines:
+                    paragraphs.append(" ".join(lines))
+                    lines = []
+                paragraphs.append(line.strip())
+                continue
+            # ``i == 0``: dòng đầu tiên ngay sau dòng trống -> luôn là đoạn mới.
+            if lines and (i == 0 or _ends_sentence(lines[-1])):
+                paragraphs.append(" ".join(lines))
+                lines = []
+            lines.append(line.strip())
+        if lines:
+            paragraphs.append(" ".join(lines))
+
+    return [p for p in paragraphs if p.strip()]
+
+
+def _natural_paragraphs_with_breaks(text: str) -> "tuple[list[str], list[str | None]]":
+    """Như :func:`_natural_paragraphs` nhưng kèm loại ranh giới trước mỗi đoạn.
+
+    Phần tử thứ ``i`` là ``"para"`` khi đoạn ``i`` được mở bởi dòng trống hay
+    dòng tiêu đề (mục/tựa), ngược lại là ``None``. Nhờ vậy nội dung đứng ngay
+    sau một dòng tiêu đề vẫn giữ được ranh giới ngắt đoạn (nghỉ dài) dù nó rơi
+    vào cùng một chunk với tiêu đề sau bước gộp chunk ngắn.
+    """
+    if not text:
+        return [], []
+
+    paragraphs: list[str] = []
+    breaks: list[str | None] = []
+
+    def add(text_: str, kind: str | None) -> None:
+        if text_.strip():
+            paragraphs.append(text_)
+            breaks.append(kind)
+
+    for chunk in _HARD_BREAK_RE.split(text):
+        lines: list[str] = []
+        lines_kind: str | None = None
+        for i, line in enumerate(_SOFT_BREAK_RE.split(chunk)):
+            if not line.strip():
+                continue
+            # Dòng tiêu đề luôn đứng RIÊNG: nó không dính vào đoạn/câu phía trên,
+            # và dòng nội dung ngay sau nó cũng mở đoạn mới.
+            if _is_heading_line(line):
+                add(" ".join(lines), lines_kind)
+                lines, lines_kind = [], None
+                add(line.strip(), "para")
+                continue
+            kind = "para" if (not lines and i == 0) else None
+            if lines and (i == 0 or _ends_sentence(lines[-1])):
+                add(" ".join(lines), lines_kind)
+                lines, lines_kind = [], "para"
+            elif not lines:
+                lines_kind = kind
+            lines.append(line.strip())
+        add(" ".join(lines), lines_kind)
+
+    return paragraphs, breaks
+
+
+def _is_heading_paragraph(para: str) -> bool:
+    """Đoạn gốc (trước normalize) có phải một dòng TIÊU ĐỀ hay không.
+
+    Phải xét trên text GỐC: normalizer hạ chữ hoa thành chữ thường, nên
+    ``_is_heading_line`` không còn nhận ra ``LỜI NÓI ĐẦU`` sau bước normalize.
+    """
+    return "\n" not in para and _is_heading_line(para)
 
 # ---------------------------------------------------------------------------
 # Inline non-verbal cues (emotion tokens) — v3 Turbo emotion checkpoint
@@ -226,6 +363,8 @@ def _normalized_sentences_by_para(
     text: str,
     skip_normalize: bool = False,
     keep_cues: bool = False,
+    gap_overrides: list[str | None] | None = None,
+    heading_flags: list[bool] | None = None,
 ) -> list[list[str]]:
     """Text thô -> list ĐOẠN, mỗi đoạn là list CÂU đã normalize.
 
@@ -239,16 +378,29 @@ def _normalized_sentences_by_para(
     ``punc_norm`` KHÔNG bật ở tầng câu: luật "câu < 5 từ ép dấu cuối về ``.``" sẽ
     biến "Thế à?" thành "thế à." ngay giữa chunk, mất ngữ điệu hỏi. Dấu câu cuối
     chỉ được chốt một lần ở tầng CHUNK.
+
+    ``gap_overrides`` (tuỳ chọn): nhận danh sách cùng độ dài với các đoạn trả về;
+    giá trị không phải ``None`` ghi đè loại ranh giới trước mỗi đoạn (dùng cho
+    dòng tiêu đề — xem :func:`_natural_paragraphs_with_breaks`).
+    ``heading_flags`` (tuỳ chọn): nhận cờ cho biết đoạn nào là dòng tiêu đề
+    (xét trên text GỐC, trước khi normalize).
     """
     from vieneu_utils.core_utils import split_into_sentences
 
-    paragraphs = [p for p in RE_NEWLINE_SPLIT.split(text) if p.strip()]
+    if gap_overrides is not None:
+        paragraphs, overrides = _natural_paragraphs_with_breaks(text)
+    else:
+        paragraphs, overrides = _natural_paragraphs(text), []
     if not paragraphs:
         return []
 
     normalizer = None if skip_normalize else _get_normalizer()
     out: list[list[str]] = []
-    for para in paragraphs:
+    for index, para in enumerate(paragraphs):
+        if gap_overrides is not None:
+            gap_overrides.append(overrides[index] if index < len(overrides) else None)
+        if heading_flags is not None:
+            heading_flags.append(_is_heading_paragraph(para))
         sentences = split_into_sentences(para)
         if not sentences:
             continue
@@ -299,6 +451,8 @@ def normalize_to_chunks_v3(
 
     Chunk ngắn hơn ``min_chunk_chars`` được gộp vào chunk kề (xem
     :func:`_merge_short_chunks`) — chunk 1-2 từ đứng riêng làm model AR dễ ảo giác.
+    Riêng dòng TIÊU ĐỀ (toàn chữ hoa) không bao giờ bị gộp với nội dung: tiêu đề
+    đứng riêng như một đoạn, nội dung theo sau vẫn được nghỉ dài như ngắt đoạn.
 
     Trả về list TEXT chunk (mỗi chunk có thể chứa ``<|emotion_k|>``); caller
     phonemize từng chunk bằng :func:`phonemize_text_with_emotions`.
@@ -317,7 +471,9 @@ def _effective_len(chunk: str) -> int:
 
 
 def _merge_short_chunks(
-    chunks: list[str], gaps: list[str], min_chars: int
+    chunks: list[str], gaps: list[str], min_chars: int,
+    keep_alone: "set[int] | None" = None,
+    raw_texts: "list[str] | None" = None,
 ) -> tuple[list[str], list[str]]:
     """Gộp chunk ngắn hơn ``min_chars`` vào chunk kề, cập nhật ``gaps`` tương ứng.
 
@@ -330,23 +486,44 @@ def _merge_short_chunks(
 
     Chunk gộp có thể vượt ``max_chars`` tối đa ``min_chars + 1`` ký tự. Chunk đơn
     độc (toàn văn bản quá ngắn) giữ nguyên — trần frame theo phoneme lo phần đó.
+
+    ``keep_alone``: các chỉ số chunk không bao giờ bị gộp (dòng tiêu đề).
+    ``raw_texts``: text của chunk TRƯỚC ``punc_norm`` (tuỳ chọn). Độ dài phải đo
+    trên bản gốc: ``punc_norm`` tự chèn dấu ``.`` nên một câu ngắn khác gì cũng
+    thành >= ``min_chars + 1`` ký tự và không còn được coi là "chunk ngắn".
     """
+    keep_alone = set() if keep_alone is None else keep_alone
+    if raw_texts is None:
+        raw_texts = chunks
+    lengths = [_effective_len(t) for t in raw_texts]
     while len(chunks) > 1:
-        short = [i for i, c in enumerate(chunks) if _effective_len(c) < min_chars]
+        short = [
+            i for i, c in enumerate(chunks)
+            if lengths[i] < min_chars and i not in keep_alone
+        ]
         if not short:
             break
-        i = min(short, key=lambda k: _effective_len(chunks[k]))
+        i = min(short, key=lambda k: lengths[k])
         sides = []                                   # (ưu_tiên, side)
-        if i < len(chunks) - 1:
+        if i < len(chunks) - 1 and i + 1 not in keep_alone:
             sides.append(((gaps[i] != "para", -len(chunks[i + 1])), "R"))
-        if i > 0:
+        if i > 0 and i - 1 not in keep_alone:
             sides.append(((gaps[i - 1] != "para", -len(chunks[i - 1])), "L"))
+        if not sides:
+            # Chỉ còn tiêu đề ở hai bên: giữ nguyên (không gộp vào tiêu đề), và
+            # bỏ khỏi danh sách chờ để vòng lặp không chạy mãi.
+            keep_alone.add(i)
+            continue
         side = max(sides, key=lambda t: t[0])[1]     # hoà -> "R" (đứng trước)
         if side == "R":
             chunks[i] = chunks[i] + " " + chunks.pop(i + 1)
+            lengths[i] = _effective_len(chunks[i])
+            lengths.pop(i + 1)
             gaps.pop(i)
         else:
             chunks[i - 1] = chunks[i - 1] + " " + chunks.pop(i)
+            lengths[i - 1] = _effective_len(chunks[i - 1])
+            lengths.pop(i)
             gaps.pop(i - 1)
     return chunks, gaps
 
@@ -373,23 +550,41 @@ def normalize_to_chunks_v3_with_gaps(
 
     keep_cues = "[" in text or "<|emotion_" in text
     chunks: list[str] = []
+    raw_chunks: list[str] = []
     gaps: list[str] = []
-    for sentences in _normalized_sentences_by_para(text, keep_cues=keep_cues):
+    # Loại ranh giới riêng của từng đoạn: tiêu đề/nội dung ngay sau tiêu đề vẫn
+    # cần nghỉ như ngắt đoạn dù bị gộp vào cùng một chunk với tiêu đề.
+    breaks: list[str | None] = []
+    # Chunk nào là DÒNG TIÊU ĐỀ (toàn chữ hoa) -> không bị gộp với nội dung.
+    labels: list[bool] = []
+    flags: list[bool] = []
+    for index, sentences in enumerate(_normalized_sentences_by_para(
+        text, keep_cues=keep_cues, gap_overrides=breaks, heading_flags=flags
+    )):
         para_chunks = pack_sentences_into_chunks(sentences, max_chars=max_chars)
         if not para_chunks:
             continue
         if chunks:                   # ranh giới với đoạn TRƯỚC đó là ngắt đoạn
-            gaps.append("para")
+            gaps.append(breaks[index] or "para")
+        if flags[index]:             # dòng tiêu đề: tách riêng từng câu
+            labels.extend([True] * len(para_chunks))
+        else:
+            labels.extend([False] * len(para_chunks))
         for j, ch in enumerate(para_chunks):
             if j > 0:                # ranh giới trong CÙNG đoạn: phân loại lại sau
                 gaps.append("sentence")
             chunks.append(ch)
+            raw_chunks.append(ch)
 
     chunks = [punc_norm(c) for c in chunks]
     gaps = [g if g == "para" else _classify_gap(chunks[i]) for i, g in enumerate(gaps)]
     # Gộp SAU punc_norm: từng mảnh đã chốt dấu câu cuối nên text gộp giữ nguyên
     # ngữ điệu ("Chương một. Nội dung..."); gap của các ranh giới còn lại không đổi.
-    return _merge_short_chunks(chunks, gaps, min_chunk_chars)
+    # Dòng tiêu đề đứng riêng: nó là một đoạn độc lập, không bị dính vào nội dung.
+    keep_alone = {i for i, flag in enumerate(labels) if flag}
+    return _merge_short_chunks(
+        chunks, gaps, min_chunk_chars, keep_alone=keep_alone, raw_texts=raw_chunks
+    )
 
 
 def phonemize_to_chunks(
@@ -422,7 +617,7 @@ def phonemize_to_chunks(
         normalized_units = [text]
     else:
         normalizer = _get_normalizer()
-        paragraphs = [p for p in RE_NEWLINE_SPLIT.split(text) if p.strip()] or [text]
+        paragraphs = _natural_paragraphs(text) or [text]
         normalized_units = normalizer.normalize_batch(paragraphs, punc_norm=True)
 
     phonemes = phonemize_batch(
