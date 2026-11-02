@@ -9,6 +9,8 @@ import numpy as np
 # ─── Regex ───────────────────────────────────────────────────────────────────
 
 RE_NEWLINE          = re.compile(r'[\r\n]+')  # dùng chung cho cả v1 và v2
+RE_PARAGRAPH_BREAK  = re.compile(r'[\r\n]+[ \t]*[\r\n]+[ \t]*')
+RE_INLINE_NEWLINE   = re.compile(r'[\r\n]+')
 RE_SENTENCE_FINDALL = re.compile(r'[^.!?]+[.!?]*|[.!?]+')
 
 # Một "từ" để đóng gói chunk: coi NGUYÊN một thẻ <en>...</en> là một token không
@@ -20,6 +22,23 @@ RE_TOKEN_KEEP_EN = re.compile(r'<en>.*?</en>|\S+', re.IGNORECASE | re.DOTALL)
 def _tokenize_keep_en(s: str) -> List[str]:
     """Tách ``s`` thành token, giữ NGUYÊN mỗi cụm ``<en>...</en>``."""
     return RE_TOKEN_KEEP_EN.findall(s)
+
+
+def split_text_into_paragraphs(text: str) -> List[str]:
+    """Ghép các dòng bị ngắt cứng bằng khoảng trắng, tách đoạn ở dòng trống.
+
+    Văn bản dán từ PDF/Word hay xuống dòng giữa câu; nếu cắt ở MỌI dấu xuống
+    dòng thì câu bị vỡ thành nhiều mẩu. Ở đây chỉ dòng TRỐNG mới là ranh giới
+    đoạn, còn xuống dòng đơn được thay bằng khoảng trắng.
+    """
+    if not text:
+        return []
+    paragraphs = []
+    for paragraph in RE_PARAGRAPH_BREAK.split(text):
+        paragraph = RE_INLINE_NEWLINE.sub(' ', paragraph).strip()
+        if paragraph:
+            paragraphs.append(paragraph)
+    return paragraphs
 
 # v1 only
 RE_SENTENCE_END = re.compile(r'(?<=[\.\!\?\…])\s+')

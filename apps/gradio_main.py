@@ -2534,8 +2534,8 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[text_input, voice_select, custom_audio, custom_text, current_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
-                    denoise_checkbox, session_id_state, subtitle_alignment_checkbox],
-            outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
+                    denoise_checkbox, session_id_state],
+            outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate.click(lambda: gr.update(visible=False), outputs=[download_btn])
         btn_generate.click(lambda: gr.update(interactive=True), outputs=btn_stop)
@@ -2547,8 +2547,8 @@ with gr.Blocks(theme=theme, css=css, title="VieNeu-TTS", head=head_html) as demo
             inputs=[clone_text_input, voice_select, custom_audio, custom_text, clone_mode_state,
                     generation_mode, use_batch, max_batch_size_run,
                     temperature_slider, max_chars_chunk_slider,
-                    denoise_checkbox, session_id_state, subtitle_alignment_checkbox],
-            outputs=[audio_output, status_output, estimate_output, subtitle_download_btn]
+                    denoise_checkbox, session_id_state],
+            outputs=[audio_output, status_output, estimate_output]
         )
         btn_generate_clone.click(lambda: gr.update(visible=False), outputs=[download_btn])
         btn_generate_clone.click(lambda: gr.update(interactive=True), outputs=btn_stop)
