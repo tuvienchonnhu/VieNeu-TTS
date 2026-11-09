@@ -175,6 +175,12 @@ _EMOTION_SPLIT_RE = re.compile(r"(\[[^\]]+\]|<\|emotion_\d+\|>)")
 # Punctuation that stays attached to the preceding emotion token (no space),
 # mirroring the training phones, e.g. "... <|emotion_2|>. ...".
 _ATTACHING_PUNCT = set(".,!?;:…)]}\"'’”")
+_VIETNAMESE_D_TRANSLATION = str.maketrans({"Ð": "Đ", "ð": "đ"})
+
+
+def _normalize_vietnamese_d(text: str) -> str:
+    """Map Latin Eth characters to the Vietnamese crossed D."""
+    return text.translate(_VIETNAMESE_D_TRANSLATION)
 
 
 def _emotion_tag_token(tag: str) -> Optional[str]:
@@ -204,10 +210,11 @@ class PuncNormalizer:
         self._n = Normalizer(lang=lang)
 
     def normalize(self, text, punc_norm: bool = True):
-        return self._n.normalize(text, punc_norm=punc_norm)
+        return self._n.normalize(_normalize_vietnamese_d(text), punc_norm=punc_norm)
 
     def normalize_batch(self, texts, punc_norm: bool = True):
-        return self._n.normalize_batch(texts, punc_norm=punc_norm)
+        normalized_texts = [_normalize_vietnamese_d(text) for text in texts]
+        return self._n.normalize_batch(normalized_texts, punc_norm=punc_norm)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +249,7 @@ def _get_normalizer() -> PuncNormalizer:
 @functools.lru_cache(maxsize=1024)
 def _phonemize_cached(text: str, punc_norm: bool = True) -> str:
     """Cached single-text phonemization (normalize + G2P), punc_norm bật mặc định."""
-    return _get_pipeline().run(text, punc_norm=punc_norm)
+    return _get_pipeline().run(_normalize_vietnamese_d(text), punc_norm=punc_norm)
 
 
 def phonemize_text(text: str) -> str:
@@ -315,7 +322,10 @@ def phonemize_batch(
     # hay thiếu dấu câu, chuỗi phones vẫn kết thúc bằng "." hợp lệ.
     if skip_normalize:
         # Texts are pre-normalized — only run the G2P layer
-        return g2p.phonemize_batch(texts, punc_norm=True, phoneme_dict=phoneme_dict)
+        normalized_texts = [_normalize_vietnamese_d(text) for text in texts]
+        return g2p.phonemize_batch(
+            normalized_texts, punc_norm=True, phoneme_dict=phoneme_dict
+        )
     else:
         # Full pipeline: normalize (punc_norm) then G2P (punc_norm)
         normalizer = _get_normalizer()
