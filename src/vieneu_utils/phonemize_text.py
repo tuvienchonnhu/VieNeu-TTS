@@ -176,11 +176,17 @@ _EMOTION_SPLIT_RE = re.compile(r"(\[[^\]]+\]|<\|emotion_\d+\|>)")
 # mirroring the training phones, e.g. "... <|emotion_2|>. ...".
 _ATTACHING_PUNCT = set(".,!?;:…)]}\"'’”")
 _VIETNAMESE_D_TRANSLATION = str.maketrans({"Ð": "Đ", "ð": "đ"})
+_LAU_HOAC_PHONEMES_RE = re.compile(r"(?<!\S)lˈə6w hwˌa6c(?=$|[\s.,!?;:])")
 
 
 def _normalize_vietnamese_d(text: str) -> str:
     """Map Latin Eth characters to the Vietnamese crossed D."""
     return text.translate(_VIETNAMESE_D_TRANSLATION)
+
+
+def _join_lau_hoac_phonemes(phonemes: str) -> str:
+    """Keep the two syllables of the Buddhist term ``lậu hoặc`` flowing together."""
+    return _LAU_HOAC_PHONEMES_RE.sub("lˈə6whwˌa6c", phonemes)
 
 
 def _emotion_tag_token(tag: str) -> Optional[str]:
@@ -249,7 +255,8 @@ def _get_normalizer() -> PuncNormalizer:
 @functools.lru_cache(maxsize=1024)
 def _phonemize_cached(text: str, punc_norm: bool = True) -> str:
     """Cached single-text phonemization (normalize + G2P), punc_norm bật mặc định."""
-    return _get_pipeline().run(_normalize_vietnamese_d(text), punc_norm=punc_norm)
+    phonemes = _get_pipeline().run(_normalize_vietnamese_d(text), punc_norm=punc_norm)
+    return _join_lau_hoac_phonemes(phonemes)
 
 
 def phonemize_text(text: str) -> str:
@@ -294,7 +301,7 @@ def phonemize_text_with_emotions(text: str) -> str:
         else:
             out += " " + ph
     # Chốt dấu cuối ở mức cả chunk (fragment bên trong đã punc_norm=False).
-    return punc_norm(out)
+    return _join_lau_hoac_phonemes(punc_norm(out))
 
 
 def phonemize_batch(
@@ -323,14 +330,16 @@ def phonemize_batch(
     if skip_normalize:
         # Texts are pre-normalized — only run the G2P layer
         normalized_texts = [_normalize_vietnamese_d(text) for text in texts]
-        return g2p.phonemize_batch(
+        phonemes = g2p.phonemize_batch(
             normalized_texts, punc_norm=True, phoneme_dict=phoneme_dict
         )
+        return [_join_lau_hoac_phonemes(ph) for ph in phonemes]
     else:
         # Full pipeline: normalize (punc_norm) then G2P (punc_norm)
         normalizer = _get_normalizer()
         normalized = [normalizer.normalize(t) for t in texts]
-        return g2p.phonemize_batch(normalized, punc_norm=True, phoneme_dict=phoneme_dict)
+        phonemes = g2p.phonemize_batch(normalized, punc_norm=True, phoneme_dict=phoneme_dict)
+        return [_join_lau_hoac_phonemes(ph) for ph in phonemes]
 
 
 def phonemize_with_dict(
@@ -351,7 +360,8 @@ def phonemize_with_dict(
         )[0]
     if skip_normalize:
         # punc_norm vẫn bật ở tầng G2P dù text đã normalize sẵn.
-        return _get_g2p().phonemize_batch([text], punc_norm=True)[0]
+        phonemes = _get_g2p().phonemize_batch([text], punc_norm=True)[0]
+        return _join_lau_hoac_phonemes(phonemes)
     return _phonemize_cached(text)
 
 

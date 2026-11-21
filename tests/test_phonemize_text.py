@@ -34,6 +34,17 @@ def test_phonemize_text_maps_latin_eth_before_pipeline():
         _phonemize_cached.cache_clear()
 
 
+def test_phonemize_text_joins_lau_hoac_phone_boundary():
+    pipeline = Mock()
+    pipeline.run.return_value = "lˈə6w hwˌa6c."
+    _phonemize_cached.cache_clear()
+    try:
+        with patch("vieneu_utils.phonemize_text._get_pipeline", return_value=pipeline):
+            assert phonemize_text("Lậu Hoặc") == "lˈə6whwˌa6c."
+    finally:
+        _phonemize_cached.cache_clear()
+
+
 def test_phonemize_batch_maps_latin_eth_when_normalization_is_skipped():
     g2p = Mock()
     g2p.phonemize_batch.return_value = ["phones"]
@@ -44,3 +55,13 @@ def test_phonemize_batch_maps_latin_eth_when_normalization_is_skipped():
     g2p.phonemize_batch.assert_called_once_with(
         ["ĐƯỜNG TU"], punc_norm=True, phoneme_dict=None
     )
+
+
+def test_phonemize_batch_joins_lau_hoac_phone_boundary():
+    g2p = Mock()
+    g2p.phonemize_batch.return_value = ["lˈə6w hwˌa6c."]
+
+    with patch("vieneu_utils.phonemize_text._get_g2p", return_value=g2p):
+        assert phonemize_batch(["lậu hoặc"], skip_normalize=True) == [
+            "lˈə6whwˌa6c."
+        ]
